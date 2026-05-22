@@ -1,0 +1,84 @@
+services:
+  qnetd:
+    container_name: proxmox-qdevice
+    image: unixerius/proxmox-qdevice:trixie
+    build: .
+    # Expose the SSH and qnetd ports.  You should only expose the
+    # SSH port (22) during initial provisioning.  Once `pvecm qdevice
+    # setup` has completed and you have restarted the container in
+    # runtime mode, remove or comment out the SSH mapping to reduce
+    # the attack surface.  The qnetd port (5403) **must** remain
+    # reachable from every Proxmox node in your cluster for quorum to
+    # operate.  Restrict 5403 to your cluster management VLAN/firewall
+    # so that only the cluster nodes can connect.
+    ports:
+      # - "22:22"  # expose SSH during setup only; comment out or remove for runtime
+      - "5403:5403"
+    # Environment variables control all aspects of the container.  See
+    # README.md for details on each variable.  Choose an appropriate
+    # QDEVICE_MODE for your phase of deployment.  During setup the SSH
+    # daemon is enabled automatically; during runtime it is disabled.
+    # You can also set QDEVICE_MODE=auto to enable SSH until the
+    # qdevice NSS database appears and then disable it automatically on
+    # subsequent restarts.  qnetd always runs and therefore does not
+    # require its own toggle.
+    environment:
+      - QDEVICE_MODE=setup
+      # Provide the root password via an environment variable or file.
+      # For production use, mount a Docker secret and set
+      # ROOT_PASSWORD_FILE=/run/secrets/root_password instead of
+      # specifying the password inline.  NEW_ROOT_PASSWORD is still
+      # supported for backwards compatibility.
+      - ROOT_PASSWORD=<SET A SECURE VALUE HERE>
+      # ROOT_PASSWORD_FILE=/run/secrets/root_password
+      # SSH authorized keys can be provided directly or via a file.
+      # ROOT_AUTHORIZED_KEYS_FILE=/run/secrets/root_authorized_keys
+      # ROOT_AUTHORIZED_KEYS="ssh-ed25519 AAAA... user@example"
+      # Run qnetd under an unprivileged account.  Uncomment and
+      # customise these variables if you wish to drop root privileges.
+      # QNETD_USER=coroqnetd
+      # QNETD_GROUP=coroqnetd
+    volumes:
+      # Persist /etc/corosync to retain qnetd configuration across
+      # container recreations.  Replace <MY LOCAL STORAGE> with a
+      # directory on your host.  For example: /var/lib/proxmox-qdevice/corosync
+      - <MY LOCAL STORAGE>/corosync:/etc/corosync
+      # Persist /root to retain the SSH authorised keys and any other
+      # state associated with the root account.  Replace <MY LOCAL STORAGE>
+      # accordingly.  For example: /var/lib/proxmox-qdevice/root
+      - <MY LOCAL STORAGE>/roothome:/root
+      # Persist SSH host keys.  Without this mount a new host key is
+      # generated on every start which can cause SSH warnings.
+      - <MY LOCAL STORAGE>/ssh:/etc/ssh
+    # Harden the container by running in read-only mode with a limited
+    # PID namespace, dropping all Linux capabilities and preventing
+    # privilege escalation.  A few tmpfs mounts allow runtime
+    # directories to remain writable.  Adjust or comment out these
+    # settings if they interfere with your environment.
+    read_only: true
+    tmpfs:
+      - /run
+      - /tmp
+      - /var/run
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    restart: unless-stopped
+    hostname: <MY FQDN>
+    networks: 
+      vlan:
+        ipv4_address: <MY IP ADDRESS>
+
+networks:
+ vlan:
+    driver: macvlan
+    driver_opts:
+      parent: <MY ETHERNET DEVICE>
+    ipam:
+       driver: default
+       config:
+        - subnet: "<MY SUBNET/MY RANGE"
+          ip_range: "<MY IP ADDRESS (same as above)>/32"
+          gateway: "<MY GATEWAY>"
