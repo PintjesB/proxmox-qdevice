@@ -1,97 +1,57 @@
-##
-# Multi‑stage Dockerfile to build a hardened, distroless variant of the
-# proxmox‑qdevice container.  This image contains only the
-# corosync‑qnetd daemon and the optional SSH server in a minimal
-# runtime environment.  The initial stage installs the required
-# packages on a Debian slim base; the final stage copies only the
-# executables and dependent libraries into a distroless base.  See
-# README.md for guidance on when to use this image.
+# Runtime-only, hardened distroless image for corosync-qnetd.
+#
+# This variant intentionally does not include SSH, a shell, chpasswd,
+# ssh-keygen, runuser, or the setup entrypoint.  It is meant for the
+# final qnetd runtime after the qdevice has already been provisioned.
+# Use Dockerfile-bookworm or Dockerfile-trixie for setup/auto mode.
 
-# Stage 0 – build the required binaries from a familiar distribution.  We
-# use Debian bookworm slim to install corosync‑qnetd and openssh.
 FROM debian:bookworm-slim AS builder
 
-# Install only the packages we need and clean up apt caches.  We
-# deliberately avoid running a full upgrade to minimise changes and
-# follow best practices for minimal images.
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-        corosync-qnetd \
-        openssh-server \
         ca-certificates \
+        corosync-qnetd \
         procps; \
-    rm -rf /var/lib/apt/lists/*
-
-# Create an unprivileged user for qnetd.  Proxmox recommends running
-# corosync‑qnetd as a non‑root user【59303623124675†L1490-L1496】.
-RUN set -eux; \
+    rm -rf /var/lib/apt/lists/*; \
     groupadd -r coroqnetd; \
     useradd -r -g coroqnetd -d /var/lib/qnetd -s /usr/sbin/nologin coroqnetd; \
-    install -d -o coroqnetd -g coroqnetd /var/lib/qnetd
+    install -d -o coroqnetd -g coroqnetd /var/lib/qnetd; \
+    install -d /out/usr/bin /out/usr/sbin /out/etc /out/var/lib/qnetd /out/etc/corosync; \
+    qnetd="$(command -v corosync-qnetd)"; \
+    pgrep="$(command -v pgrep)"; \
+    install -D "$qnetd" /out/usr/bin/corosync-qnetd; \
+    install -D "$qnetd" /out/usr/sbin/corosync-qnetd; \
+    install -D "$pgrep" /out/usr/bin/pgrep; \
+    cp /etc/passwd /out/etc/passwd; \
+    cp /etc/group /out/etc/group; \
+    cp /etc/nsswitch.conf /out/etc/nsswitch.conf
 
-# Stage 1 – produce the final distroless image.  We start from the
-# official distroless base with Debian 12 libraries.  This base
-# includes glibc and essential certificates but no package manager,
-# shell or other tooling, which reduces the attack surface as
-# documented in the Docker Hardened Images guidance【329066236168222†L1017-L1040】.
 FROM gcr.io/distroless/base-debian12:nonroot
 
-# Copy the corosync‑qnetd and sshd executables.  They are installed
-# under /usr/sbin in the build stage.  We also copy the scp binary
-# because sshd depends on it for file transfers.
-COPY --from=builder /usr/sbin/corosync-qnetd /usr/sbin/sshd /usr/sbin/
+# Copy qnetd, pgrep, identity files and minimal state directories.
+COPY --from=builder /out/ /
 
-# Copy additional diagnostics tools.  We include pgrep from the procps
-# package installed in the builder stage so that we can implement a
-# healthcheck in this distroless image.  Distroless images lack most
-# userland utilities, so copying pgrep and its dependencies allows
-# monitoring of the running qnetd process without adding a full shell.
-COPY --from=builder /usr/bin/pgrep /usr/bin/
-
-# Copy the dynamic libraries required by corosync‑qnetd and sshd.  A
-# complete dependency list is determined via ldd in the build stage.
-# We copy the commonly used library directories in their entirety to
-# ensure all dependencies are available at runtime.  While this
-# slightly increases image size, it maintains functionality in the
-# absence of a package manager.
+# Copy the shared libraries used by qnetd and pgrep.  This is less pure
+# than copying an ldd-derived file list, but keeps the Dockerfile stable
+# across Debian point releases while still avoiding a shell, package
+# manager and generic userland in the final image.
 COPY --from=builder /lib/x86_64-linux-gnu /lib/x86_64-linux-gnu
 COPY --from=builder /lib64 /lib64
 COPY --from=builder /usr/lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu
-
-# Copy configuration files and PAM definitions for sshd.  Without
-# these files sshd will not start correctly.  We avoid copying the
-# entire /etc directory; only the required subtrees are included.
-COPY --from=builder /etc/ssh /etc/ssh
-COPY --from=builder /etc/pam.d /etc/pam.d
-
-# Copy timezone data to support locale‑sensitive logging.  Distroless
-# images ship without zoneinfo by default, so we include it here.
 COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+COPY --from=builder /etc/ssl/certs /etc/ssl/certs
 
-# Copy the entrypoint and validation scripts from the repository.  The
-# entrypoint orchestrates setup vs runtime modes, optional auto‑
-# switching, and rootless operation.
-COPY entrypoint.sh /entrypoint.sh
-COPY validate_env.sh /usr/local/bin/validate_env.sh
+# qnetd listens on TCP/5403 by default.  The port is above 1024, so it
+# does not require root privileges.
+EXPOSE 5403/tcp
 
-# Ensure the entrypoint is executable.
-RUN chmod +x /entrypoint.sh /usr/local/bin/validate_env.sh
+# Run as the distroless nonroot user by default.  When mounting existing
+# /etc/corosync or /var/lib/qnetd volumes, make sure the files are
+# readable by uid 65532, or override the user explicitly at runtime.
+USER 65532:65532
 
-# Use the root user in the final image.  Although the distroless
-# base defaults to a non‑root UID, the entrypoint requires root
-# privileges during setup to configure SSH keys and file ownership.
-# See README.md for guidance on running the container as a
-# non‑root user after provisioning.
-USER 0
+ENTRYPOINT ["/usr/bin/corosync-qnetd", "-f"]
 
-# Set entrypoint.  All behaviour is controlled by environment
-# variables, particularly QDEVICE_MODE=auto|setup|runtime.
-ENTRYPOINT ["/entrypoint.sh"]
-
-# Define a healthcheck for the distroless image.  We use the `pgrep`
-# binary copied from the builder stage to verify that the
-# corosync-qnetd process is running.  Healthchecks are optional but
-# recommended for production deployments.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-  CMD /usr/bin/pgrep corosync-qnetd >/dev/null 2>&1 || exit 1
+  CMD ["/usr/bin/pgrep", "corosync-qnetd"]

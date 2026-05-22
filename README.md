@@ -32,6 +32,12 @@ Run this container on a device that is *NOT* a virtual instance on one of your P
 * **Automatic SSH host key generation**.  If you persist `/etc/ssh` as
   a volume and this directory is empty on first start, the entrypoint
   will generate host keys to avoid using keys baked into the image.
+* **Runtime-only distroless image**.  `Dockerfile-distroless` builds a
+  minimal qnetd runtime image without SSH, a shell, a package manager
+  or the setup entrypoint.  Use `Dockerfile-bookworm` or
+  `Dockerfile-trixie` for initial setup and `QDEVICE_MODE=auto`; use
+  the distroless image only after the qdevice has already been
+  provisioned.
 
 ## Cluster design considerations
 

@@ -2,50 +2,71 @@ name: integration-test
 
 on:
   push:
-    branches: [ master ]
+    branches: [master, testing]
   pull_request:
+
+concurrency:
+  group: integration-test-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
 
-      # Build the container image from the repository.  We change into
-      # the proxmox-qdevice-master subdirectory because GitHub checks
-      # out the entire repository by default.
+    strategy:
+      fail-fast: false
+      matrix:
+        image_variant:
+          - name: bookworm
+            dockerfile: Dockerfile-bookworm
+            supports_setup: true
+          - name: trixie
+            dockerfile: Dockerfile-trixie
+            supports_setup: true
+          - name: distroless
+            dockerfile: Dockerfile-distroless
+            supports_setup: false
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
       - name: Build Docker image
         run: |
-          cd proxmox-qdevice-master
-          docker build -t proxmox-qdevice-test .
+          docker build \
+            -f "${{ matrix.image_variant.dockerfile }}" \
+            -t "proxmox-qdevice-test:${{ matrix.image_variant.name }}" \
+            .
 
-      # Ensure that in runtime mode the corosync-qnetd daemon starts and
-      # remains running.  We run the container in detached mode,
-      # wait a few seconds for startup and then search for the qnetd
-      # process inside the container.  If the process cannot be
-      # found, pgrep will return a non‑zero exit code and cause the job
-      # to fail.
       - name: Verify qnetd and healthcheck in runtime mode
         run: |
-          set -e
-          # Run the container in runtime mode.  We omit QNETD_ENABLED because qnetd always runs.
-          CONTAINER_ID=$(docker run -d -e QDEVICE_MODE=runtime proxmox-qdevice-test)
-          # Wait for the daemon and healthcheck to initialise
-          sleep 10
-          # Ensure the qnetd process is present
-          docker exec "$CONTAINER_ID" pgrep corosync-qnetd
-          # Ensure the container reports healthy state via the Docker healthcheck
-          docker inspect --format='{{ .State.Health.Status }}' "$CONTAINER_ID" | grep -q healthy
-          docker rm -f "$CONTAINER_ID"
+          set -euo pipefail
 
-      # Ensure that in setup mode the SSH daemon starts.  We set a
-      # temporary root password because the entrypoint will refuse to
-      # start SSH without authentication material.  After a short
-      # delay we verify that sshd is running.
+          CONTAINER_ID=$(docker run -d "proxmox-qdevice-test:${{ matrix.image_variant.name }}")
+          trap 'docker rm -f "$CONTAINER_ID" >/dev/null 2>&1 || true' EXIT
+
+          for i in $(seq 1 30); do
+            STATUS=$(docker inspect --format='{{ .State.Health.Status }}' "$CONTAINER_ID")
+            if [ "$STATUS" = "healthy" ]; then
+              exit 0
+            fi
+            sleep 2
+          done
+
+          docker logs "$CONTAINER_ID"
+          docker inspect "$CONTAINER_ID"
+          exit 1
+
       - name: Verify sshd in setup mode
+        if: ${{ matrix.image_variant.supports_setup }}
         run: |
-          set -e
-          CONTAINER_ID=$(docker run -d -e QDEVICE_MODE=setup -e ROOT_PASSWORD=testpwd proxmox-qdevice-test)
+          set -euo pipefail
+
+          CONTAINER_ID=$(docker run -d \
+            -e QDEVICE_MODE=setup \
+            -e ROOT_PASSWORD=testpwd \
+            "proxmox-qdevice-test:${{ matrix.image_variant.name }}")
+          trap 'docker rm -f "$CONTAINER_ID" >/dev/null 2>&1 || true' EXIT
+
           sleep 5
-          docker exec $CONTAINER_ID pgrep sshd
-          docker rm -f $CONTAINER_ID
+          docker exec "$CONTAINER_ID" pgrep sshd

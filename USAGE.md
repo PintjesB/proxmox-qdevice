@@ -66,6 +66,24 @@ Additional optional variables include:
 For more details on each environment variable see the comments in
 `docker-compose.yml` and the `entrypoint.sh` script.
 
+### Distroless runtime image
+
+The distroless image is intentionally runtime-only.  It does not include SSH,
+a shell, password tooling or the setup entrypoint.  Build and use the Bookworm
+or Trixie image for `pvecm qdevice setup`; after the qdevice state exists and
+has been persisted, you can switch to the distroless image for the final
+qnetd runtime.
+
+Build it with:
+
+```sh
+docker build -f Dockerfile-distroless -t proxmox-qdevice:distroless .
+```
+
+The distroless image does not require a Docker Hub username or password to
+build.  CI only needs credentials when publishing to an external registry.  The
+provided workflow publishes to GHCR with `GITHUB_TOKEN` when `IMAGEPUSH=true`.
+
 In the location for your persistent storage, make sure to create the directories for the root homedir and the corosync-data.
 
 ### Special note for Synology
@@ -89,7 +107,7 @@ The very first time that you run the container, this will _seemingly_ fail. It r
 1. Build your Proxmox cluster.
 2. Run the `proxmox-qdevice` container via Docker Compose.
 
-Then fFollow the [setup instructions on the Proxmox site](https://pve.proxmox.com/wiki/Cluster_Manager#_corosync_external_vote_support), which means:
+Then follow the [setup instructions on the Proxmox site](https://pve.proxmox.com/wiki/Cluster_Manager#_corosync_external_vote_support), which means:
 
 3. Install the `corosync-qdevice` package on all real cluster nodes.
 4. Ensure that all cluster nodes can SSH to the container; I did `ssh_copy_id root@${qdeviceIP}`.

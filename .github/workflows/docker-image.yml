@@ -4,96 +4,101 @@ on:
   push:
     branches: [master, testing]
     paths:
-      - Dockerfile-disroless
+      - Dockerfile-bookworm
+      - Dockerfile-trixie
+      - Dockerfile-distroless
+      - entrypoint.sh
+      - validate_env.sh
+      - .github/workflows/docker-image.yml
   pull_request:
     branches: [master, testing]
   schedule:
     - cron: "0 0 * * 6"
   workflow_dispatch:
 
+concurrency:
+  group: docker-image-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
-  registry: unixerius
-  image: proxmox-qdevice
-  platforms: linux/amd64,linux/arm64
+  IMAGE_NAME: proxmox-qdevice
+  PLATFORMS: linux/amd64,linux/arm64
+  IMAGE_PUSH: ${{ vars.IMAGEPUSH || 'false' }}
 
 jobs:
-
   build:
-
     runs-on: ubuntu-latest
 
-    environment:
-      name: ${{ github.ref_name }}
-
     strategy:
-      matrix:
-        debianver: [disroless]
       fail-fast: false
+      matrix:
+        image_variant:
+          - name: bookworm
+            dockerfile: Dockerfile-bookworm
+          - name: trixie
+            dockerfile: Dockerfile-trixie
+          - name: distroless
+            dockerfile: Dockerfile-distroless
 
     permissions:
       contents: read
       packages: write
       attestations: write
+      id-token: write
 
     steps:
-    - name: Checkout sources
-      uses: actions/checkout@v4
+      - name: Checkout sources
+        uses: actions/checkout@v4
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
-    - name: Set up QEMU
-      uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-    - name: Login to Docker Hub
-      uses: docker/login-action@v3
-      if: ${{ github.actor != 'dependabot[bot]' && !github.event.pull_request.head.repo.fork }}
-      with:
-        username: ${{ secrets.DHI_USER }}
-        password: ${{ secrets.DHI_TOKEN }}
+      - name: Determine publish mode
+        id: publish
+        shell: bash
+        run: |
+          SHOULD_PUSH="false"
 
-    - name: Login to Docker Hardened Images registry
-      uses: docker/login-action@v3
-      if: ${{ github.actor != 'dependabot[bot]' && !github.event.pull_request.head.repo.fork }}
-      with:
-        registry: dhi.io
-        username: ${{ secrets.DHI_USER }}
-        password: ${{ secrets.DHI_TOKEN }}
+          if [[ "${{ github.actor }}" != "dependabot[bot]" \
+            && "${{ github.event_name }}" != "pull_request" \
+            && "${IMAGE_PUSH}" == "true" ]]; then
+            SHOULD_PUSH="true"
+          fi
 
-    - name: Login to GitHub Docker registry
-      uses: docker/login-action@v3
-      if: ${{ github.actor != 'dependabot[bot]' && !github.event.pull_request.head.repo.fork }}
-      with:
-        registry: ghcr.io
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+          echo "should_push=${SHOULD_PUSH}" >> "$GITHUB_OUTPUT"
 
-    - name: Docker meta
-      id: meta
-      uses: docker/metadata-action@v5
-      with:
-        # list of Docker images to use as base name for tags
-        images: |
-          ${{ env.registry }}/${{ env.image }}
-          ghcr.io/${{ env.registry }}/${{ env.image }}
-        tags: |
-          type=raw,priority=1000,value=${{matrix.debianver}}
-          type=schedule,priority=800,pattern={{date 'YYYYMMDD'}},prefix=${{matrix.debianver}}-
-          type=sha,priority=400,prefix=${{matrix.debianver}}-
-        flavor: |
-          latest=auto
+      - name: Login to GitHub Container Registry
+        if: ${{ steps.publish.outputs.should_push == 'true' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Build and push the Docker image
-      if: ${{ github.actor != 'dependabot[bot]' && github.event_name != 'pull_request' }}
-      uses: docker/build-push-action@v6
-      with:
-        push: ${{ vars.IMAGEPUSH }}
-        provenance: mode=max,version=v1
-        sbom: true
-        platforms: ${{env.platforms}}
-        file: Dockerfile-${{matrix.debianver}}
-        #tags: ${{ steps.meta.outputs.tags }}
-        tags: |
-          ${{env.registry}}/${{env.image}}:${{matrix.debianver}}
-          ghcr.io/${{env.registry}}/${{env.image}}:${{matrix.debianver}}
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,priority=1000,value=${{ matrix.image_variant.name }}
+            type=schedule,priority=800,pattern={{date 'YYYYMMDD'}},prefix=${{ matrix.image_variant.name }}-
+            type=sha,priority=400,prefix=${{ matrix.image_variant.name }}-
+          flavor: |
+            latest=false
 
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.image_variant.dockerfile }}
+          platforms: ${{ env.PLATFORMS }}
+          push: ${{ steps.publish.outputs.should_push == 'true' }}
+          provenance: mode=max
+          sbom: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
