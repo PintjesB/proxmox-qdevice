@@ -14,9 +14,6 @@ RUN set -eux; \
         corosync-qnetd \
         procps; \
     rm -rf /var/lib/apt/lists/*; \
-    groupadd -r coroqnetd; \
-    useradd -r -g coroqnetd -d /var/lib/qnetd -s /usr/sbin/nologin coroqnetd; \
-    install -d -o coroqnetd -g coroqnetd /var/lib/qnetd; \
     install -d /out/usr/bin /out/usr/sbin /out/etc /out/var/lib/qnetd /out/etc/corosync; \
     qnetd="$(command -v corosync-qnetd)"; \
     pgrep="$(command -v pgrep)"; \
@@ -25,7 +22,8 @@ RUN set -eux; \
     install -D "$pgrep" /out/usr/bin/pgrep; \
     cp /etc/passwd /out/etc/passwd; \
     cp /etc/group /out/etc/group; \
-    cp /etc/nsswitch.conf /out/etc/nsswitch.conf
+    cp /etc/nsswitch.conf /out/etc/nsswitch.conf; \
+    chown -R 65532:65532 /out/var/lib/qnetd /out/etc/corosync
 
 FROM gcr.io/distroless/base-debian12:nonroot
 
@@ -36,9 +34,8 @@ COPY --from=builder /out/ /
 # than copying an ldd-derived file list, but keeps the Dockerfile stable
 # across Debian point releases while still avoiding a shell, package
 # manager and generic userland in the final image.
-COPY --from=builder /lib/x86_64-linux-gnu /lib/x86_64-linux-gnu
-COPY --from=builder /lib64 /lib64
-COPY --from=builder /usr/lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu
+COPY --from=builder /lib /lib
+COPY --from=builder /usr/lib /usr/lib
 COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=builder /etc/ssl/certs /etc/ssl/certs
 

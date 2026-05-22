@@ -39,6 +39,7 @@ jobs:
             .
 
       - name: Verify qnetd and healthcheck in runtime mode
+        if: ${{ matrix.image_variant.supports_setup }}
         run: |
           set -euo pipefail
 
@@ -56,6 +57,26 @@ jobs:
           docker logs "$CONTAINER_ID"
           docker inspect "$CONTAINER_ID"
           exit 1
+
+      - name: Verify distroless image metadata
+        if: ${{ ! matrix.image_variant.supports_setup }}
+        run: |
+          set -euo pipefail
+
+          USER_VALUE=$(docker image inspect \
+            --format='{{ .Config.User }}' \
+            "proxmox-qdevice-test:${{ matrix.image_variant.name }}")
+          test "$USER_VALUE" = "65532:65532"
+
+          ENTRYPOINT_VALUE=$(docker image inspect \
+            --format='{{ json .Config.Entrypoint }}' \
+            "proxmox-qdevice-test:${{ matrix.image_variant.name }}")
+          test "$ENTRYPOINT_VALUE" = '["/usr/bin/corosync-qnetd","-f"]'
+
+          HEALTHCHECK_VALUE=$(docker image inspect \
+            --format='{{ json .Config.Healthcheck.Test }}' \
+            "proxmox-qdevice-test:${{ matrix.image_variant.name }}")
+          test "$HEALTHCHECK_VALUE" = '["CMD","/usr/bin/pgrep","corosync-qnetd"]'
 
       - name: Verify sshd in setup mode
         if: ${{ matrix.image_variant.supports_setup }}
