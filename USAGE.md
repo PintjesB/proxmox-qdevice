@@ -152,3 +152,9 @@ All secrets should be persisted across container recreation.  For example, mount
 >
 > **A note on `latest` and `beta`:** It is not recommended to use the `latest` (`unixerius/proxmox-qdevice`, `unixerius/proxmox-qdevice:latest`) tag for production setups.  Floating tags can change without notice and may introduce breaking changes.  Always specify an immutable version tag when deploying to production.
 
+
+## One-time setup, then distroless runtime
+
+For a hardened deployment, run the Debian-based image only once for the `pvecm qdevice setup` step, then switch to the distroless runtime image using the same persisted `/etc/corosync` state.
+
+See `docs/BOOTSTRAP_DISTROLESS_RUNTIME.md` for the exact one-time `docker run` command and the final distroless runtime command.  A helper script is also provided at `examples/one-time-setup-then-distroless.sh`.

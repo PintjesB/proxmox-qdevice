@@ -1,5 +1,7 @@
 FROM debian:bookworm-slim
 
+ENV DEBIAN_FRONTEND=noninteractive
+
 # Install only the minimal packages required to run an SSH server and the
 # corosync qnet daemon.  Supervisor has been removed because a custom
 # entrypoint script now handles process management based on environment
@@ -7,16 +9,17 @@ FROM debian:bookworm-slim
 # Use apt-get and avoid unnecessary full upgrades.  Only install
 # required packages and remove apt lists to reduce image size.
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y openssh-server corosync-qnetd \
+    && apt-get install --no-install-recommends -y openssh-server corosync-qnetd procps \
     && rm -rf /var/lib/apt/lists/*
 
-# Create an unprivileged user and group for running corosync-qnetd.  This
-# follows Proxmox's recommendation to run any QDevice daemon as an
-# unprivileged user【59303623124675†L1490-L1496】.  The user's home directory
-# is set to /var/lib/qnetd and this directory is owned accordingly.
-RUN groupadd -r coroqnetd && useradd -r -g coroqnetd -d /var/lib/qnetd -s /usr/sbin/nologin coroqnetd \
-    && mkdir -p /var/lib/qnetd \
-    && chown coroqnetd:coroqnetd /var/lib/qnetd
+# Ensure the unprivileged qnetd account and state directory exist.
+# Debian's corosync-qnetd package already creates the coroqnetd user/group
+# on current Bookworm/Trixie builds, so this must be idempotent.
+RUN set -eux; \
+    if ! getent group coroqnetd >/dev/null; then groupadd -r coroqnetd; fi; \
+    if ! id -u coroqnetd >/dev/null 2>&1; then useradd -r -g coroqnetd -d /var/lib/qnetd -s /usr/sbin/nologin coroqnetd; fi; \
+    mkdir -p /var/lib/qnetd; \
+    chown coroqnetd:coroqnetd /var/lib/qnetd
 
 # Proxmox relies upon SSH between cluster nodes using the root account.
 # PermitRootLogin is explicitly enabled here.  The SSH daemon is

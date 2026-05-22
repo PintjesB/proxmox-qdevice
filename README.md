@@ -96,3 +96,7 @@ This repository is based on original [work by Bradley Leonard](https://github.co
 
 Bradley's original wiki [can be found here](https://github.com/bcleonard/proxmox-qdevice/wiki) which contains all kinds of information on configuring this container.
 
+
+## One-time setup, then distroless runtime
+
+The recommended hardened flow is to use the Debian-based image only for initial `pvecm qdevice setup`, then switch to the distroless runtime image.  See `docs/BOOTSTRAP_DISTROLESS_RUNTIME.md` or run `examples/one-time-setup-then-distroless.sh` for a guided one-time setup.
