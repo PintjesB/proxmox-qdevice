@@ -102,6 +102,15 @@ if [ -n "$ROOT_PASSWORD" ]; then
   echo "root:${ROOT_PASSWORD}" | chpasswd
 fi
 
+init_sshd_config() {
+  if [ "$SSHD_ENABLED" = "true" ] && [ ! -f /etc/ssh/sshd_config ]; then
+    info "Initializing /etc/ssh from image defaults"
+    mkdir -p /etc/ssh
+    cp -a /usr/share/proxmox-qdevice/ssh-defaults/. /etc/ssh/
+    rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub
+  fi
+}
+
 # Configure root authorized keys if provided.  Only append keys if
 # either ROOT_AUTHORIZED_KEYS or the file is non-empty.
 install_root_authorized_keys() {
@@ -130,6 +139,8 @@ install_root_authorized_keys() {
     chmod 600 /root/.ssh/authorized_keys
   fi
 }
+
+init_sshd_config
 
 install_root_authorized_keys
 
@@ -176,6 +187,33 @@ detect_setup_complete() {
     return 0
   fi
   return 1
+}
+
+# When /etc/corosync is backed by a new host volume, the qnetd NSS
+# database created by the package post-install script is hidden by the
+# mount.  corosync-qnetd refuses to start without this database and
+# exits with "Can't open NSS DB directory".  Initialise the server-side
+# NSS database when it is missing.  This is safe for setup and runtime
+# images because the command is skipped when the persisted database
+# already exists.
+init_qnetd_nssdb() {
+  if [ -f "$COROSYNC_DIR/qnetd/nssdb/qnetd-cacert.crt" ]; then
+    return 0
+  fi
+
+  if [ -d "$COROSYNC_DIR/qnetd/nssdb" ] && [ -n "$(ls -A "$COROSYNC_DIR/qnetd/nssdb" 2>/dev/null || true)" ]; then
+    info "qnetd NSS DB directory exists but qnetd CA certificate is missing"
+    info "Leaving existing NSS DB untouched"
+    return 0
+  fi
+
+  if ! command -v corosync-qnetd-certutil >/dev/null 2>&1; then
+    fatal "corosync-qnetd-certutil is missing and qnetd NSS DB has not been initialized"
+  fi
+
+  info "Initializing qnetd NSS DB"
+  mkdir -p "$COROSYNC_DIR/qnetd"
+  corosync-qnetd-certutil -i
 }
 
 # Apply automatic mode detection if requested.  We update the
@@ -232,6 +270,10 @@ start_qnetd() {
 if [ "$SSHD_ENABLED" = "true" ]; then
   start_sshd
 fi
+
+# Ensure qnetd can start when /etc/corosync is an initially empty
+# persisted host volume.
+init_qnetd_nssdb
 
 # Always start the qnetd service.  This call will 'exec' the daemon and
 # replace the shell with corosync-qnetd.
