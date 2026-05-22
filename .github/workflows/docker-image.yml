@@ -4,8 +4,7 @@ on:
   push:
     branches: [master, testing]
     paths:
-      - Dockerfile-bookworm
-      - Dockerfile-trixie
+      - Dockerfile-disroless
   pull_request:
     branches: [master, testing]
   schedule:
@@ -28,7 +27,7 @@ jobs:
 
     strategy:
       matrix:
-        debianver: [bookworm, trixie]
+        debianver: [disroless]
       fail-fast: false
 
     permissions:
